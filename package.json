@@ -1,0 +1,19 @@
+{
+  "name": "ebeyshiy-myach",
+  "version": "0.1.0",
+  "description": "Volleyball analytics app with odds, totals, value and risk models",
+  "main": "api/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node api/index.js",
+    "dev": "node api/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
