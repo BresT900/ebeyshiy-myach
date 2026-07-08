@@ -22,8 +22,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     app: "ЕБЕЙШИЙ МЯЧ",
-    version: "0.1.0",
-    time: new Date().toISOString()
+    version: "0.1.0"
   });
 });
 
@@ -32,29 +31,25 @@ app.get("/api/status", (req, res) => {
     ok: true,
     title: "ЕБЕЙШИЙ МЯЧ",
     version: "0.1 AUTO",
-    mode: "demo-engine",
-    updatedAt: new Date().toISOString(),
-    note: "Стартовый движок работает. Дальше подключаем реальные API и расширяем матмодели."
+    mode: "development"
   });
 });
 
 app.get("/api/matches", async (req, res) => {
   try {
-    const filter = req.query.filter || "all";
-    const matches = await getVolleyballMatches({ filter });
+    const matches = await getVolleyballMatches({
+      filter: req.query.filter || "all"
+    });
 
     res.json({
       ok: true,
       count: matches.length,
-      updatedAt: new Date().toISOString(),
       matches
     });
   } catch (error) {
-    console.error("/api/matches error:", error);
     res.status(500).json({
       ok: false,
-      error: "Не удалось собрать матчи",
-      details: error.message
+      error: error.message
     });
   }
 });
