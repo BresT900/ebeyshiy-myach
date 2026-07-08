@@ -1,0 +1,70 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Arial, sans-serif;
+  background: linear-gradient(135deg, #170022, #2d0750, #090016);
+  color: white;
+}
+
+.app {
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+}
+
+header {
+  padding: 25px;
+  border-radius: 25px;
+  background: linear-gradient(135deg, #b100ff, #ff1493);
+  margin-bottom: 20px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 36px;
+}
+
+header p {
+  font-size: 18px;
+}
+
+.card,
+.match {
+  background: rgba(15, 10, 35, .9);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 24px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+.match h2 {
+  margin-top: 0;
+}
+
+.teams {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.pick {
+  margin-top: 15px;
+  padding: 15px;
+  border-radius: 18px;
+  background: rgba(255,20,147,.25);
+}
+
+.green {
+  color: #39ff88;
+}
+
+.small {
+  color: #aaa;
+  font-size: 14px;
+}
