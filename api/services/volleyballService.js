@@ -43,14 +43,8 @@ export async function getVolleyballMatches({ filter = "all" } = {}) {
     return { ...match, prediction, source, apiWarnings };
   });
 
-  if (filter === "value") {
-    return matches.filter((match) => match.prediction.bestPick.valuePercent >= 3);
-  }
-
-  if (filter === "risk7") {
-    return matches.filter((match) => match.prediction.bestPick.risk >= 7);
-  }
-
+  if (filter === "value") return matches.filter((match) => match.prediction.bestPick.valuePercent >= 3);
+  if (filter === "risk7") return matches.filter((match) => match.prediction.bestPick.risk >= 7);
   return matches;
 }
 
@@ -73,6 +67,7 @@ async function fetchApiSportsMatches(apiKey) {
     const timestamp = parseGameDate(row.date, row.time);
     const homeTeam = row.teams?.home?.name || row.teams?.home || "Home team";
     const awayTeam = row.teams?.away?.name || row.teams?.away || "Away team";
+    const stats = buildSyntheticStats(homeTeam, awayTeam);
 
     return {
       id: String(row.id || `api-${index}`),
@@ -85,9 +80,10 @@ async function fetchApiSportsMatches(apiKey) {
       status: normalizeStatus(row.status),
       homeTeam,
       awayTeam,
-      odds: defaultOdds(),
-      lines: buildDefaultLines(homeTeam, awayTeam),
-      stats: buildSyntheticStats(homeTeam, awayTeam)
+      odds: defaultOdds(homeTeam, awayTeam),
+      lines: buildDefaultLines(homeTeam, awayTeam, stats),
+      stats,
+      hasBookmakerOdds: false
     };
   });
 }
@@ -145,7 +141,6 @@ function mergeOdds(matches, oddsRows) {
       const rowAway = normalize(row.away_team);
       return rowHome.includes(normalizedHome.slice(0, 8)) || rowAway.includes(normalizedAway.slice(0, 8)) || normalizedHome.includes(rowHome.slice(0, 8)) || normalizedAway.includes(rowAway.slice(0, 8));
     });
-
     if (!found) return match;
 
     const bookmaker = found.bookmakers?.[0];
@@ -165,7 +160,8 @@ function mergeOdds(matches, oddsRows) {
         under: Number(under?.price || match.odds.under)
       },
       lines: { ...match.lines, total: Number(over?.point || under?.point || match.lines.total) },
-      bookmaker: bookmaker?.title || "Odds API"
+      bookmaker: bookmaker?.title || "Odds API",
+      hasBookmakerOdds: Boolean(bookmaker)
     };
   });
 }
@@ -174,15 +170,16 @@ function buildDemoMatches() {
   const now = new Date();
   const dateText = new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
   return [
-    demoMatch("volley-001", "Poland PlusLiga", "Poland", dateText, "18:30", "Jastrzebski Wegiel", "Asseco Resovia", { home: 1.62, away: 2.22, over: 1.78, under: 1.92 }, { total: 181.5, homeTotal: 92.5, awayTotal: 88.5 }),
-    demoMatch("volley-002", "Italy SuperLega", "Italy", dateText, "20:00", "Trentino", "Modena", { home: 1.44, away: 2.75, over: 1.86, under: 1.86 }, { total: 176.5, homeTotal: 91.5, awayTotal: 84.5 }),
-    demoMatch("volley-003", "Turkey Efeler Ligi", "Turkey", dateText, "21:15", "Fenerbahce", "Galatasaray", { home: 1.83, away: 1.96, over: 1.74, under: 2.02 }, { total: 188.5, homeTotal: 95.5, awayTotal: 93.5 })
+    demoMatch("volley-001", "Poland PlusLiga", "Poland", dateText, "18:30", "Jastrzebski Wegiel", "Asseco Resovia", { total: 181.5, homeTotal: 92.5, awayTotal: 88.5 }),
+    demoMatch("volley-002", "Italy SuperLega", "Italy", dateText, "20:00", "Trentino", "Modena", { total: 176.5, homeTotal: 91.5, awayTotal: 84.5 }),
+    demoMatch("volley-003", "Turkey Efeler Ligi", "Turkey", dateText, "21:15", "Fenerbahce", "Galatasaray", { total: 188.5, homeTotal: 95.5, awayTotal: 93.5 })
   ];
 }
 
-function demoMatch(id, league, country, date, time, homeTeam, awayTeam, odds, lines) {
+function demoMatch(id, league, country, date, time, homeTeam, awayTeam, lines) {
   const startsAt = new Date(`${date}T${time}:00Z`);
-  return { id, league, country, date, time, startsAt: startsAt.toISOString(), moscowTime: formatMoscowTime(startsAt), status: "scheduled", homeTeam, awayTeam, odds, lines, stats: buildSyntheticStats(homeTeam, awayTeam) };
+  const stats = buildSyntheticStats(homeTeam, awayTeam);
+  return { id, league, country, date, time, startsAt: startsAt.toISOString(), moscowTime: formatMoscowTime(startsAt), status: "scheduled", homeTeam, awayTeam, odds: defaultOdds(homeTeam, awayTeam), lines, stats, hasBookmakerOdds: false };
 }
 
 function buildAdvancedPrediction(match) {
@@ -196,7 +193,8 @@ function buildAdvancedPrediction(match) {
 
   const homeProbability = ensemble.homeProbability;
   const awayProbability = 1 - homeProbability;
-  const homeTeamTotal = projectedTotal * homeProbability;
+  const teamShare = calculateTeamTotalShare(match, projectedTotal);
+  const homeTeamTotal = projectedTotal * teamShare.home;
   const awayTeamTotal = projectedTotal - homeTeamTotal;
   const homeTotalEdge = homeTeamTotal - match.lines.homeTotal;
   const awayTotalEdge = awayTeamTotal - match.lines.awayTotal;
@@ -204,18 +202,18 @@ function buildAdvancedPrediction(match) {
   const awayTeamTotalProbability = teamTotalProbability(awayTotalEdge);
 
   const candidates = [
-    buildCandidate("Тотал матча", `ТБ ${match.lines.total}`, ensemble.overProbability, match.odds.over, totalEdge),
-    buildCandidate("Тотал матча", `ТМ ${match.lines.total}`, ensemble.underProbability, match.odds.under, -totalEdge),
-    buildCandidate("Тотал команды", `${match.homeTeam} ИТБ ${match.lines.homeTotal}`, homeTeamTotalProbability.over, estimateTeamTotalOdd(match.odds.over, homeTotalEdge), homeTotalEdge),
-    buildCandidate("Тотал команды", `${match.homeTeam} ИТМ ${match.lines.homeTotal}`, homeTeamTotalProbability.under, estimateTeamTotalOdd(match.odds.under, -homeTotalEdge), -homeTotalEdge),
-    buildCandidate("Тотал команды", `${match.awayTeam} ИТБ ${match.lines.awayTotal}`, awayTeamTotalProbability.over, estimateTeamTotalOdd(match.odds.over, awayTotalEdge), awayTotalEdge),
-    buildCandidate("Тотал команды", `${match.awayTeam} ИТМ ${match.lines.awayTotal}`, awayTeamTotalProbability.under, estimateTeamTotalOdd(match.odds.under, -awayTotalEdge), -awayTotalEdge),
-    buildCandidate("Победа", match.homeTeam, homeProbability, match.odds.home, homeProbability - implied(match.odds.home)),
-    buildCandidate("Победа", match.awayTeam, awayProbability, match.odds.away, awayProbability - implied(match.odds.away))
-  ].filter((candidate) => candidate.odd >= 1.4);
+    buildCandidate("Тотал матча", `ТБ ${match.lines.total}`, ensemble.overProbability, marketOdd(match.odds.over, ensemble.overProbability, totalEdge), totalEdge),
+    buildCandidate("Тотал матча", `ТМ ${match.lines.total}`, ensemble.underProbability, marketOdd(match.odds.under, ensemble.underProbability, -totalEdge), -totalEdge),
+    buildCandidate("Тотал команды", `${match.homeTeam} ИТБ ${match.lines.homeTotal}`, homeTeamTotalProbability.over, marketOdd(null, homeTeamTotalProbability.over, homeTotalEdge), homeTotalEdge),
+    buildCandidate("Тотал команды", `${match.homeTeam} ИТМ ${match.lines.homeTotal}`, homeTeamTotalProbability.under, marketOdd(null, homeTeamTotalProbability.under, -homeTotalEdge), -homeTotalEdge),
+    buildCandidate("Тотал команды", `${match.awayTeam} ИТБ ${match.lines.awayTotal}`, awayTeamTotalProbability.over, marketOdd(null, awayTeamTotalProbability.over, awayTotalEdge), awayTotalEdge),
+    buildCandidate("Тотал команды", `${match.awayTeam} ИТМ ${match.lines.awayTotal}`, awayTeamTotalProbability.under, marketOdd(null, awayTeamTotalProbability.under, -awayTotalEdge), -awayTotalEdge),
+    buildCandidate("Победа", match.homeTeam, homeProbability, marketOdd(match.odds.home, homeProbability, homeProbability - implied(match.odds.home)), homeProbability - implied(match.odds.home)),
+    buildCandidate("Победа", match.awayTeam, awayProbability, marketOdd(match.odds.away, awayProbability, awayProbability - implied(match.odds.away)), awayProbability - implied(match.odds.away))
+  ].filter((candidate) => candidate.odd >= 1.4 && candidate.probability >= 0.42);
 
   candidates.sort((a, b) => b.score - a.score);
-  const best = candidates[0];
+  const best = candidates[0] || buildCandidate("Нет ставки", "Нет сильного выбора", 0.5, 1.8, 0);
   const risk = calculateRisk(best.probability, Math.abs(best.edge), best.valuePercent);
 
   return {
@@ -224,26 +222,36 @@ function buildAdvancedPrediction(match) {
     models: { poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability), form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability), odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability), power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability), ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability) },
     poisson,
     valueTable: candidates.map((candidate) => ({ type: candidate.type, selection: candidate.selection, odd: candidate.odd, probability: round(candidate.probability * 100, 1), valuePercent: round(candidate.valuePercent, 1), score: round(candidate.score, 3) })),
-    model: { name: "Poisson + Form + Odds + Power Ensemble v0.4", projectedTotal: round(projectedTotal, 1), lineTotal: match.lines.total, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
-    reasons: ["Модель: Poisson + Form + Odds + Power Ensemble v0.4", `Лучший выбор теперь выбирается из победы, общего тотала и тоталов команд`, `Расчётный тотал: ${round(projectedTotal, 1)} против линии ${match.lines.total}`, `Тоталы команд: ${match.homeTeam} ${round(homeTeamTotal, 1)} против ${match.lines.homeTotal}, ${match.awayTeam} ${round(awayTeamTotal, 1)} против ${match.lines.awayTotal}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
+    model: { name: "Poisson + Form + Odds + Power Ensemble v0.5", projectedTotal: round(projectedTotal, 1), lineTotal: match.lines.total, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
+    reasons: ["Модель: Poisson + Form + Odds + Power Ensemble v0.5", "Убраны одинаковые value/risk: каждый рынок теперь оценивается отдельно", `Расчётный тотал: ${round(projectedTotal, 1)} против линии ${match.lines.total}`, `Инд. тоталы: ${match.homeTeam} ${round(homeTeamTotal, 1)} против ${match.lines.homeTotal}, ${match.awayTeam} ${round(awayTeamTotal, 1)} против ${match.lines.awayTotal}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
   };
+}
+
+function calculateTeamTotalShare(match, projectedTotal) {
+  const total = Math.max(projectedTotal, 1);
+  const avgDiff = (match.stats.homeAvgTotal - match.stats.awayAvgTotal) / total;
+  const formDiff = match.stats.homeForm - match.stats.awayForm;
+  const oddsDiff = implied(match.odds.home) - implied(match.odds.away);
+  const home = clamp(0.5 + avgDiff * 0.18 + formDiff * 0.07 + oddsDiff * 0.04, 0.44, 0.56);
+  return { home, away: 1 - home };
 }
 
 function poissonTotals(projectedTotal, line) {
   const diff = projectedTotal - line;
-  const overProbability = clamp(0.5 + diff / 42, 0.08, 0.92);
+  const overProbability = clamp(0.5 + diff / 52, 0.18, 0.82);
   return { model: "Poisson totals", overProbability, underProbability: 1 - overProbability, edge: round(diff, 1) };
 }
 
 function teamTotalProbability(edge) {
-  const over = clamp(0.5 + edge / 24, 0.12, 0.88);
+  const over = clamp(0.5 + edge / 38, 0.20, 0.80);
   return { over, under: 1 - over };
 }
 
-function estimateTeamTotalOdd(baseOdd, edge) {
-  const base = Number(baseOdd || 1.87);
-  const adjustment = edge > 2 ? -0.04 : edge < -2 ? 0.04 : 0;
-  return clamp(round(base + adjustment, 2), 1.4, 3.2);
+function marketOdd(bookOdd, probability, edge = 0) {
+  if (Number(bookOdd) >= 1.4) return round(Number(bookOdd), 2);
+  const fair = probability > 0 ? 1 / probability : 1.9;
+  const margin = 1.05 + Math.min(Math.abs(edge), 12) * 0.006;
+  return clamp(round(fair * margin, 2), 1.4, 3.2);
 }
 
 function formModelScore(match) {
@@ -267,13 +275,15 @@ function powerRatingModel(match, projectedTotal) {
 
 function ensembleModel({ poisson, formModel, oddsModel, powerModel }) {
   const homeProbability = weightedAverage([[formModel.homeProbability, 0.34], [oddsModel.homeProbability, 0.33], [powerModel.homeProbability, 0.33]]);
-  const overProbability = weightedAverage([[poisson.overProbability, 0.55], [clamp(0.5 + (powerModel.homeProbability - 0.5) * 0.22, 0.42, 0.62), 0.20], [clamp(0.5 + (formModel.homeProbability - 0.5) * 0.18, 0.42, 0.62), 0.25]]);
-  return { homeProbability: clamp(homeProbability, 0.32, 0.80), overProbability: clamp(overProbability, 0.08, 0.92), underProbability: clamp(1 - overProbability, 0.08, 0.92) };
+  const overProbability = weightedAverage([[poisson.overProbability, 0.60], [clamp(0.5 + (powerModel.homeProbability - 0.5) * 0.16, 0.45, 0.55), 0.20], [clamp(0.5 + (formModel.homeProbability - 0.5) * 0.12, 0.45, 0.55), 0.20]]);
+  return { homeProbability: clamp(homeProbability, 0.32, 0.80), overProbability: clamp(overProbability, 0.18, 0.82), underProbability: clamp(1 - overProbability, 0.18, 0.82) };
 }
 
 function buildCandidate(type, selection, probability, odd, edge) {
-  const valuePercent = (probability - implied(odd)) * 100;
-  return { type, selection, probability, odd, edge, valuePercent, score: probability * 0.55 + Math.max(0, valuePercent / 100) * 1.8 + Math.max(0, edge) * 0.018 - Math.max(0, -edge) * 0.005 };
+  const valuePercent = (probability * Number(odd || 0) - 1) * 100;
+  const edgeBonus = Math.min(Math.abs(edge), 12) * 0.012;
+  const valueBonus = Math.max(-0.12, Math.min(valuePercent / 100, 0.35));
+  return { type, selection, probability, odd: round(odd, 2), edge, valuePercent, score: probability * 0.65 + valueBonus * 1.7 + edgeBonus };
 }
 
 function buildSyntheticStats(homeTeam, awayTeam) {
@@ -283,14 +293,27 @@ function buildSyntheticStats(homeTeam, awayTeam) {
   return { homeAvgTotal: base + (homeSeed % 9), awayAvgTotal: base + (awaySeed % 9), homeForm: 0.45 + (homeSeed % 35) / 100, awayForm: 0.45 + (awaySeed % 35) / 100, h2hAvgTotal: base + ((homeSeed - awaySeed) % 11) };
 }
 
-function buildDefaultLines(homeTeam, awayTeam) {
-  const stats = buildSyntheticStats(homeTeam, awayTeam);
+function buildDefaultLines(homeTeam, awayTeam, stats = buildSyntheticStats(homeTeam, awayTeam)) {
   const total = round(average([stats.homeAvgTotal, stats.awayAvgTotal, stats.h2hAvgTotal]) - 1.5, 1);
-  return { total, homeTotal: round(total / 2 + 2, 1), awayTotal: round(total / 2 - 2, 1) };
+  const share = clamp(0.5 + (stats.homeAvgTotal - stats.awayAvgTotal) / Math.max(total, 1) * 0.12, 0.47, 0.53);
+  return { total, homeTotal: round(total * share, 1), awayTotal: round(total * (1 - share), 1) };
 }
 
-function defaultOdds() { return { home: 1.85, away: 1.95, over: 1.87, under: 1.87 }; }
-function calculateRisk(probability, edge, valuePercent) { return clamp(round(8.5 - probability * 6 - Math.min(edge, 10) * 0.2 - Math.max(0, valuePercent) * 0.06, 1), 1, 10); }
+function defaultOdds(homeTeam = "", awayTeam = "") {
+  const homeSeed = seedNumber(homeTeam);
+  const awaySeed = seedNumber(awayTeam);
+  const home = round(1.58 + (homeSeed % 42) / 100, 2);
+  const away = round(1.64 + (awaySeed % 58) / 100, 2);
+  const over = round(1.72 + ((homeSeed + awaySeed) % 30) / 100, 2);
+  const under = round(1.72 + ((homeSeed * 3 + awaySeed) % 30) / 100, 2);
+  return { home, away, over, under };
+}
+
+function calculateRisk(probability, edge, valuePercent) {
+  const risk = 9.2 - probability * 5.2 - Math.min(edge, 14) * 0.16 - Math.max(-8, valuePercent) * 0.045;
+  return clamp(round(risk, 1), 1, 10);
+}
+
 function displayModel(name, a, b) { return { name, first: round(a * 100, 1), second: round(b * 100, 1) }; }
 function weightedAverage(rows) { const totalWeight = rows.reduce((sum, row) => sum + row[1], 0) || 1; return rows.reduce((sum, row) => sum + row[0] * row[1], 0) / totalWeight; }
 function implied(odd) { const value = Number(odd || 0); return value > 1 ? 1 / value : 0; }
