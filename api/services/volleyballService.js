@@ -197,6 +197,7 @@ function buildAdvancedPrediction(match) {
   const setsModel = expectedSetsModel(match, totalEdge);
   const monteCarlo = monteCarloModel(match, projectedTotal, marketLine, 650);
   const ensemble = ensembleModel({ poisson, formModel, oddsModel, powerModel, setsModel, monteCarlo });
+  const setTotals = buildSetTotals(match, projectedTotal, marketLine, ensemble, monteCarlo);
 
   const homeProbability = weightedAverage([[ensemble.homeProbability, 0.72], [monteCarlo.homeWinProbability, 0.28]]);
   const awayProbability = 1 - homeProbability;
@@ -211,9 +212,15 @@ function buildAdvancedPrediction(match) {
   const homeTeamTotalProbability = isRealLine(homeTotalLine) ? teamTotalProbability(homeTotalEdge) : null;
   const awayTeamTotalProbability = isRealLine(awayTotalLine) ? teamTotalProbability(awayTotalEdge) : null;
 
+  const setCandidates = setTotals.flatMap((set) => [
+    buildCandidate("Тотал сета", `${set.label} ТБ ${set.line}`, set.overProbability / 100, set.overOdd, set.edge),
+    buildCandidate("Тотал сета", `${set.label} ТМ ${set.line}`, set.underProbability / 100, set.underOdd, -set.edge)
+  ]);
+
   const candidates = [
     buildCandidate("Тотал матча", `ТБ ${marketLine}`, ensemble.overProbability, marketOdd(match.odds.over, ensemble.overProbability, totalEdge), totalEdge),
     buildCandidate("Тотал матча", `ТМ ${marketLine}`, ensemble.underProbability, marketOdd(match.odds.under, ensemble.underProbability, -totalEdge), -totalEdge),
+    ...setCandidates,
     ...(homeTeamTotalProbability ? [
       buildCandidate("Тотал команды", `${match.homeTeam} ИТБ ${homeTotalLine}`, homeTeamTotalProbability.over, marketOdd(null, homeTeamTotalProbability.over, homeTotalEdge), homeTotalEdge),
       buildCandidate("Тотал команды", `${match.homeTeam} ИТМ ${homeTotalLine}`, homeTeamTotalProbability.under, marketOdd(null, homeTeamTotalProbability.under, -homeTotalEdge), -homeTotalEdge)
@@ -233,13 +240,44 @@ function buildAdvancedPrediction(match) {
   return {
     bestPick: { type: best.type, selection: best.selection, probability: round(best.probability * 100, 1), odd: best.odd, valuePercent: round(best.valuePercent, 1), edge: round(best.edge, 2), risk, riskLabel: risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий" },
     totals: { matchLine: marketLine, projectedMatchTotal: round(projectedTotal, 1), projectedHomeTotal: round(homeTeamTotal, 1), projectedAwayTotal: round(awayTeamTotal, 1), homeTotalLine: isRealLine(homeTotalLine) ? homeTotalLine : null, awayTotalLine: isRealLine(awayTotalLine) ? awayTotalLine : null, homeTotalEdge: isRealLine(homeTotalEdge) ? round(homeTotalEdge, 1) : null, awayTotalEdge: isRealLine(awayTotalEdge) ? round(awayTotalEdge, 1) : null, hasTeamTotalLines: Boolean(homeTeamTotalProbability && awayTeamTotalProbability), rawModelTotal: round(rawModelTotal, 1), marketWeight: match.hasBookmakerOdds ? "рынок" : "расчётная линия" },
+    setTotals,
     models: { poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability), form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability), odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability), power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability), sets: displayModel("Сеты", setsModel.overProbability, 1 - setsModel.overProbability), monteCarlo: displayModel("Monte Carlo", monteCarlo.overProbability, monteCarlo.underProbability), ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability) },
     poisson,
     monteCarlo: { simulations: monteCarlo.simulations, expectedTotal: round(monteCarlo.avgTotal, 1), overProbability: round(monteCarlo.overProbability * 100, 1), underProbability: round(monteCarlo.underProbability * 100, 1), homeWinProbability: round(monteCarlo.homeWinProbability * 100, 1), awayWinProbability: round((1 - monteCarlo.homeWinProbability) * 100, 1) },
     valueTable: candidates.map((candidate) => ({ type: candidate.type, selection: candidate.selection, odd: candidate.odd, probability: round(candidate.probability * 100, 1), valuePercent: round(candidate.valuePercent, 1), score: round(candidate.score, 3) })),
-    model: { name: "Market-anchored Ensemble + Monte Carlo v0.8", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
-    reasons: ["Модель: Market-anchored Ensemble + Monte Carlo v0.8", `Monte Carlo: ${monteCarlo.simulations} симуляций, средний тотал ${round(monteCarlo.avgTotal, 1)}`, "Фейковые индивидуальные тоталы 0 убраны: если линия команды отсутствует, ставка ИТБ/ИТМ не выбирается", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Командные прогнозы модели: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
+    model: { name: "Market-anchored Ensemble + Monte Carlo + Set Totals v0.9", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
+    reasons: ["Модель: Market-anchored Ensemble + Monte Carlo + Set Totals v0.9", `Monte Carlo: ${monteCarlo.simulations} симуляций, средний тотал ${round(monteCarlo.avgTotal, 1)}`, "Добавлены тоталы 1/2/3 сета: линии строятся от рыночной линии матча и ожидаемого числа сетов", "Фейковые индивидуальные тоталы 0 убраны: если линия команды отсутствует, ставка ИТБ/ИТМ не выбирается", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Командные прогнозы модели: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
   };
+}
+
+function buildSetTotals(match, projectedTotal, marketLine, ensemble, monteCarlo) {
+  const seed = seedNumber(`${match.homeTeam}-${match.awayTeam}-${marketLine}`);
+  const expectedSets = clamp(3.55 + Math.abs(ensemble.homeProbability - 0.5) * -0.65 + Math.abs(ensemble.overProbability - 0.5) * 0.35, 3.15, 4.45);
+  const baseSetLine = clamp(marketLine / expectedSets, 39.5, 48.5);
+  const matchEdgePerSet = (projectedTotal - marketLine) / Math.max(expectedSets, 1);
+  const rows = [
+    { number: 1, label: "1-й сет", factor: 1.00 + ((seed % 5) - 2) * 0.004 },
+    { number: 2, label: "2-й сет", factor: 0.985 + ((seed % 7) - 3) * 0.004 },
+    { number: 3, label: "3-й сет", factor: 0.975 + ((seed % 9) - 4) * 0.004 }
+  ];
+
+  return rows.map((row) => {
+    const line = round(toHalfPoint(baseSetLine * row.factor), 1);
+    const projected = round(line + matchEdgePerSet * (row.number === 1 ? 0.90 : row.number === 2 ? 0.75 : 0.60), 1);
+    const edge = round(projected - line, 1);
+    const overProbability = clamp(weightedAverage([[0.5 + edge / 11, 0.55], [monteCarlo.overProbability, 0.25], [ensemble.overProbability, 0.20]]) * 100, 36, 64);
+    const underProbability = 100 - overProbability;
+    return {
+      ...row,
+      line,
+      projected,
+      edge,
+      overProbability: round(overProbability, 1),
+      underProbability: round(underProbability, 1),
+      overOdd: marketOdd(null, overProbability / 100, edge),
+      underOdd: marketOdd(null, underProbability / 100, -edge)
+    };
+  });
 }
 
 function sanitizeLines(lines, match) {
@@ -407,6 +445,7 @@ function calculateRisk(probability, edge, valuePercent) {
   return clamp(round(risk, 1), 1, 10);
 }
 
+function toHalfPoint(value) { return Math.round(Number(value || 0) * 2) / 2; }
 function displayModel(name, a, b) { return { name, first: round(a * 100, 1), second: round(b * 100, 1) }; }
 function weightedAverage(rows) { const totalWeight = rows.reduce((sum, row) => sum + row[1], 0) || 1; return rows.reduce((sum, row) => sum + row[0] * row[1], 0) / totalWeight; }
 function implied(odd) { const value = Number(odd || 0); return value > 1 ? 1 / value : 0; }
