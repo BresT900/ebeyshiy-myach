@@ -185,8 +185,9 @@ function demoMatch(id, league, country, date, time, homeTeam, awayTeam, totalLin
 }
 
 function buildAdvancedPrediction(match) {
+  const safeLines = sanitizeLines(match.lines, match);
   const rawModelTotal = average([match.stats.homeAvgTotal, match.stats.awayAvgTotal, match.stats.h2hAvgTotal]);
-  const marketLine = Number(match.lines.total || rawModelTotal);
+  const marketLine = Number(safeLines.total || rawModelTotal);
   const projectedTotal = marketAdjustedTotal(rawModelTotal, marketLine, match);
   const totalEdge = projectedTotal - marketLine;
   const poisson = poissonTotals(projectedTotal, marketLine);
@@ -201,21 +202,28 @@ function buildAdvancedPrediction(match) {
   const teamShare = calculateTeamTotalShare(match, projectedTotal);
   const homeTeamTotal = projectedTotal * teamShare.home;
   const awayTeamTotal = projectedTotal - homeTeamTotal;
-  const homeTotalEdge = homeTeamTotal - match.lines.homeTotal;
-  const awayTotalEdge = awayTeamTotal - match.lines.awayTotal;
-  const homeTeamTotalProbability = teamTotalProbability(homeTotalEdge);
-  const awayTeamTotalProbability = teamTotalProbability(awayTotalEdge);
+
+  const homeTotalLine = safeLines.homeTotal;
+  const awayTotalLine = safeLines.awayTotal;
+  const homeTotalEdge = isRealLine(homeTotalLine) ? homeTeamTotal - homeTotalLine : null;
+  const awayTotalEdge = isRealLine(awayTotalLine) ? awayTeamTotal - awayTotalLine : null;
+  const homeTeamTotalProbability = isRealLine(homeTotalLine) ? teamTotalProbability(homeTotalEdge) : null;
+  const awayTeamTotalProbability = isRealLine(awayTotalLine) ? teamTotalProbability(awayTotalEdge) : null;
 
   const candidates = [
     buildCandidate("Тотал матча", `ТБ ${marketLine}`, ensemble.overProbability, marketOdd(match.odds.over, ensemble.overProbability, totalEdge), totalEdge),
     buildCandidate("Тотал матча", `ТМ ${marketLine}`, ensemble.underProbability, marketOdd(match.odds.under, ensemble.underProbability, -totalEdge), -totalEdge),
-    buildCandidate("Тотал команды", `${match.homeTeam} ИТБ ${match.lines.homeTotal}`, homeTeamTotalProbability.over, marketOdd(null, homeTeamTotalProbability.over, homeTotalEdge), homeTotalEdge),
-    buildCandidate("Тотал команды", `${match.homeTeam} ИТМ ${match.lines.homeTotal}`, homeTeamTotalProbability.under, marketOdd(null, homeTeamTotalProbability.under, -homeTotalEdge), -homeTotalEdge),
-    buildCandidate("Тотал команды", `${match.awayTeam} ИТБ ${match.lines.awayTotal}`, awayTeamTotalProbability.over, marketOdd(null, awayTeamTotalProbability.over, awayTotalEdge), awayTotalEdge),
-    buildCandidate("Тотал команды", `${match.awayTeam} ИТМ ${match.lines.awayTotal}`, awayTeamTotalProbability.under, marketOdd(null, awayTeamTotalProbability.under, -awayTotalEdge), -awayTotalEdge),
+    ...(homeTeamTotalProbability ? [
+      buildCandidate("Тотал команды", `${match.homeTeam} ИТБ ${homeTotalLine}`, homeTeamTotalProbability.over, marketOdd(null, homeTeamTotalProbability.over, homeTotalEdge), homeTotalEdge),
+      buildCandidate("Тотал команды", `${match.homeTeam} ИТМ ${homeTotalLine}`, homeTeamTotalProbability.under, marketOdd(null, homeTeamTotalProbability.under, -homeTotalEdge), -homeTotalEdge)
+    ] : []),
+    ...(awayTeamTotalProbability ? [
+      buildCandidate("Тотал команды", `${match.awayTeam} ИТБ ${awayTotalLine}`, awayTeamTotalProbability.over, marketOdd(null, awayTeamTotalProbability.over, awayTotalEdge), awayTotalEdge),
+      buildCandidate("Тотал команды", `${match.awayTeam} ИТМ ${awayTotalLine}`, awayTeamTotalProbability.under, marketOdd(null, awayTeamTotalProbability.under, -awayTotalEdge), -awayTotalEdge)
+    ] : []),
     buildCandidate("Победа", match.homeTeam, homeProbability, marketOdd(match.odds.home, homeProbability, homeProbability - implied(match.odds.home)), homeProbability - implied(match.odds.home)),
     buildCandidate("Победа", match.awayTeam, awayProbability, marketOdd(match.odds.away, awayProbability, awayProbability - implied(match.odds.away)), awayProbability - implied(match.odds.away))
-  ].filter((candidate) => candidate.odd >= 1.4 && candidate.probability >= 0.42);
+  ].filter((candidate) => candidate.odd >= 1.4 && candidate.probability >= 0.42 && isFiniteNumber(candidate.edge));
 
   candidates.sort((a, b) => b.score - a.score);
   const best = candidates[0] || buildCandidate("Нет ставки", "Нет сильного выбора", 0.5, 1.8, 0);
@@ -223,12 +231,23 @@ function buildAdvancedPrediction(match) {
 
   return {
     bestPick: { type: best.type, selection: best.selection, probability: round(best.probability * 100, 1), odd: best.odd, valuePercent: round(best.valuePercent, 1), edge: round(best.edge, 2), risk, riskLabel: risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий" },
-    totals: { matchLine: marketLine, projectedMatchTotal: round(projectedTotal, 1), projectedHomeTotal: round(homeTeamTotal, 1), projectedAwayTotal: round(awayTeamTotal, 1), homeTotalLine: match.lines.homeTotal, awayTotalLine: match.lines.awayTotal, homeTotalEdge: round(homeTotalEdge, 1), awayTotalEdge: round(awayTotalEdge, 1), rawModelTotal: round(rawModelTotal, 1), marketWeight: match.hasBookmakerOdds ? "рынок" : "расчётная линия" },
+    totals: { matchLine: marketLine, projectedMatchTotal: round(projectedTotal, 1), projectedHomeTotal: round(homeTeamTotal, 1), projectedAwayTotal: round(awayTeamTotal, 1), homeTotalLine: isRealLine(homeTotalLine) ? homeTotalLine : null, awayTotalLine: isRealLine(awayTotalLine) ? awayTotalLine : null, homeTotalEdge: isRealLine(homeTotalEdge) ? round(homeTotalEdge, 1) : null, awayTotalEdge: isRealLine(awayTotalEdge) ? round(awayTotalEdge, 1) : null, hasTeamTotalLines: Boolean(homeTeamTotalProbability && awayTeamTotalProbability), rawModelTotal: round(rawModelTotal, 1), marketWeight: match.hasBookmakerOdds ? "рынок" : "расчётная линия" },
     models: { poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability), form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability), odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability), power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability), sets: displayModel("Сеты", setsModel.overProbability, 1 - setsModel.overProbability), ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability) },
     poisson,
     valueTable: candidates.map((candidate) => ({ type: candidate.type, selection: candidate.selection, odd: candidate.odd, probability: round(candidate.probability * 100, 1), valuePercent: round(candidate.valuePercent, 1), score: round(candidate.score, 3) })),
-    model: { name: "Market-anchored Ensemble v0.6", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
-    reasons: ["Модель: Market-anchored Ensemble v0.6", "Теперь прогноз не улетает далеко от рыночной линии: рынок берётся как главный якорь, модель ищет перевес вокруг него", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Сырой расчёт без рынка был ${round(rawModelTotal, 1)}, но он сглажен`, `Инд. тоталы: ${match.homeTeam} ${round(homeTeamTotal, 1)} против ${match.lines.homeTotal}, ${match.awayTeam} ${round(awayTeamTotal, 1)} против ${match.lines.awayTotal}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
+    model: { name: "Market-anchored Ensemble v0.7", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
+    reasons: ["Модель: Market-anchored Ensemble v0.7", "Фейковые индивидуальные тоталы 0 убраны: если линия команды отсутствует, ставка ИТБ/ИТМ не выбирается", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Сырой расчёт без рынка был ${round(rawModelTotal, 1)}, но он сглажен`, `Командные прогнозы модели: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
+  };
+}
+
+function sanitizeLines(lines, match) {
+  const stats = match.stats || buildSyntheticStats(match.homeTeam, match.awayTeam);
+  const fallback = buildDefaultLines(match.homeTeam, match.awayTeam, stats, lines?.total);
+  const total = isRealLine(lines?.total) ? Number(lines.total) : fallback.total;
+  return {
+    total,
+    homeTotal: isRealLine(lines?.homeTotal) ? Number(lines.homeTotal) : null,
+    awayTotal: isRealLine(lines?.awayTotal) ? Number(lines.awayTotal) : null
   };
 }
 
@@ -315,14 +334,14 @@ function buildSyntheticStats(homeTeam, awayTeam) {
 
 function buildDefaultLines(homeTeam, awayTeam, stats = buildSyntheticStats(homeTeam, awayTeam), forcedTotal = null) {
   const raw = average([stats.homeAvgTotal, stats.awayAvgTotal, stats.h2hAvgTotal]);
-  const total = round(Number.isFinite(Number(forcedTotal)) ? Number(forcedTotal) : clamp(raw - 12.5, 168.5, 188.5), 1);
-  const share = clamp(0.5 + (stats.homeAvgTotal - stats.awayAvgTotal) / Math.max(total, 1) * 0.10, 0.475, 0.525);
-  return { total, homeTotal: round(total * share, 1), awayTotal: round(total * (1 - share), 1) };
+  const total = round(Number.isFinite(Number(forcedTotal)) && Number(forcedTotal) > 80 ? Number(forcedTotal) : clamp(raw - 12.5, 168.5, 188.5), 1);
+  return { total, homeTotal: null, awayTotal: null };
 }
 
 function recalcTeamLines(lines, match) {
   const stats = match.stats || buildSyntheticStats(match.homeTeam, match.awayTeam);
-  return buildDefaultLines(match.homeTeam, match.awayTeam, stats, lines.total);
+  const base = buildDefaultLines(match.homeTeam, match.awayTeam, stats, lines.total);
+  return { ...base, homeTotal: null, awayTotal: null };
 }
 
 function defaultOdds(homeTeam = "", awayTeam = "") {
@@ -346,6 +365,8 @@ function implied(odd) { const value = Number(odd || 0); return value > 1 ? 1 / v
 function average(values) { const clean = values.map(Number).filter(Number.isFinite); return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : 0; }
 function normalize(value) { return String(value || "").toLowerCase().replace(/[^a-zа-я0-9]/gi, ""); }
 function seedNumber(text) { return String(text || "").split("").reduce((sum, char) => sum + char.charCodeAt(0), 0); }
+function isFiniteNumber(value) { return Number.isFinite(Number(value)); }
+function isRealLine(value) { return Number.isFinite(Number(value)) && Number(value) > 20; }
 
 function formatMoscowTime(date) {
   const parsed = date instanceof Date ? date : new Date(date);
