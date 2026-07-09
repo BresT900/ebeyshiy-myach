@@ -195,9 +195,10 @@ function buildAdvancedPrediction(match) {
   const oddsModel = oddsModelScore(match);
   const powerModel = powerRatingModel(match, projectedTotal);
   const setsModel = expectedSetsModel(match, totalEdge);
-  const ensemble = ensembleModel({ poisson, formModel, oddsModel, powerModel, setsModel });
+  const monteCarlo = monteCarloModel(match, projectedTotal, marketLine, 650);
+  const ensemble = ensembleModel({ poisson, formModel, oddsModel, powerModel, setsModel, monteCarlo });
 
-  const homeProbability = ensemble.homeProbability;
+  const homeProbability = weightedAverage([[ensemble.homeProbability, 0.72], [monteCarlo.homeWinProbability, 0.28]]);
   const awayProbability = 1 - homeProbability;
   const teamShare = calculateTeamTotalShare(match, projectedTotal);
   const homeTeamTotal = projectedTotal * teamShare.home;
@@ -232,11 +233,12 @@ function buildAdvancedPrediction(match) {
   return {
     bestPick: { type: best.type, selection: best.selection, probability: round(best.probability * 100, 1), odd: best.odd, valuePercent: round(best.valuePercent, 1), edge: round(best.edge, 2), risk, riskLabel: risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий" },
     totals: { matchLine: marketLine, projectedMatchTotal: round(projectedTotal, 1), projectedHomeTotal: round(homeTeamTotal, 1), projectedAwayTotal: round(awayTeamTotal, 1), homeTotalLine: isRealLine(homeTotalLine) ? homeTotalLine : null, awayTotalLine: isRealLine(awayTotalLine) ? awayTotalLine : null, homeTotalEdge: isRealLine(homeTotalEdge) ? round(homeTotalEdge, 1) : null, awayTotalEdge: isRealLine(awayTotalEdge) ? round(awayTotalEdge, 1) : null, hasTeamTotalLines: Boolean(homeTeamTotalProbability && awayTeamTotalProbability), rawModelTotal: round(rawModelTotal, 1), marketWeight: match.hasBookmakerOdds ? "рынок" : "расчётная линия" },
-    models: { poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability), form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability), odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability), power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability), sets: displayModel("Сеты", setsModel.overProbability, 1 - setsModel.overProbability), ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability) },
+    models: { poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability), form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability), odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability), power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability), sets: displayModel("Сеты", setsModel.overProbability, 1 - setsModel.overProbability), monteCarlo: displayModel("Monte Carlo", monteCarlo.overProbability, monteCarlo.underProbability), ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability) },
     poisson,
+    monteCarlo: { simulations: monteCarlo.simulations, expectedTotal: round(monteCarlo.avgTotal, 1), overProbability: round(monteCarlo.overProbability * 100, 1), underProbability: round(monteCarlo.underProbability * 100, 1), homeWinProbability: round(monteCarlo.homeWinProbability * 100, 1), awayWinProbability: round((1 - monteCarlo.homeWinProbability) * 100, 1) },
     valueTable: candidates.map((candidate) => ({ type: candidate.type, selection: candidate.selection, odd: candidate.odd, probability: round(candidate.probability * 100, 1), valuePercent: round(candidate.valuePercent, 1), score: round(candidate.score, 3) })),
-    model: { name: "Market-anchored Ensemble v0.7", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
-    reasons: ["Модель: Market-anchored Ensemble v0.7", "Фейковые индивидуальные тоталы 0 убраны: если линия команды отсутствует, ставка ИТБ/ИТМ не выбирается", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Сырой расчёт без рынка был ${round(rawModelTotal, 1)}, но он сглажен`, `Командные прогнозы модели: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
+    model: { name: "Market-anchored Ensemble + Monte Carlo v0.8", projectedTotal: round(projectedTotal, 1), rawModelTotal: round(rawModelTotal, 1), lineTotal: marketLine, totalEdge: round(totalEdge, 1), overProbability: round(ensemble.overProbability * 100, 1), underProbability: round(ensemble.underProbability * 100, 1), homeProbability: round(homeProbability * 100, 1), awayProbability: round(awayProbability * 100, 1) },
+    reasons: ["Модель: Market-anchored Ensemble + Monte Carlo v0.8", `Monte Carlo: ${monteCarlo.simulations} симуляций, средний тотал ${round(monteCarlo.avgTotal, 1)}`, "Фейковые индивидуальные тоталы 0 убраны: если линия команды отсутствует, ставка ИТБ/ИТМ не выбирается", `Линия рынка/ориентир: ${marketLine}`, `Наша модель: ${round(projectedTotal, 1)}, перевес: ${round(totalEdge, 1)}`, `Командные прогнозы модели: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`, `Value лучшего выбора: ${round(best.valuePercent, 1)}%`, `Риск: ${risk}/10 (${risk <= 3 ? "низкий" : risk <= 6 ? "средний" : "высокий"})`]
   };
 }
 
@@ -281,6 +283,52 @@ function expectedSetsModel(match, totalEdge) {
   return { expectedSets: round(expectedSets, 2), overProbability };
 }
 
+function monteCarloModel(match, projectedTotal, marketLine, simulations = 650) {
+  const rng = seededRandom(seedNumber(`${match.id}-${match.homeTeam}-${match.awayTeam}-${marketLine}`));
+  const share = calculateTeamTotalShare(match, projectedTotal);
+  const avgSetTotal = clamp(projectedTotal / 3.8, 39, 49);
+  const balance = 1 - Math.min(Math.abs(match.stats.homeForm - match.stats.awayForm) * 1.8, 0.35);
+  const expectedSets = clamp(3.2 + balance * 0.75, 3.1, 4.25);
+  let over = 0;
+  let homeWins = 0;
+  let totalPoints = 0;
+
+  for (let i = 0; i < simulations; i += 1) {
+    const sets = clamp(Math.round(normalSample(rng, expectedSets, 0.55)), 3, 5);
+    const volatility = normalSample(rng, 0, 7.5 + sets * 0.75);
+    const total = Math.max(110, sets * avgSetTotal + volatility);
+    const homePoints = total * clamp(normalSample(rng, share.home, 0.035), 0.38, 0.62);
+    const awayPoints = total - homePoints;
+    if (total > marketLine) over += 1;
+    if (homePoints > awayPoints) homeWins += 1;
+    totalPoints += total;
+  }
+
+  const overProbability = over / simulations;
+  return {
+    simulations,
+    avgTotal: totalPoints / simulations,
+    overProbability: clamp(overProbability, 0.22, 0.78),
+    underProbability: clamp(1 - overProbability, 0.22, 0.78),
+    homeWinProbability: clamp(homeWins / simulations, 0.30, 0.82)
+  };
+}
+
+function normalSample(rng, mean, sd) {
+  const u1 = Math.max(rng(), 1e-9);
+  const u2 = Math.max(rng(), 1e-9);
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return mean + z * sd;
+}
+
+function seededRandom(seed) {
+  let state = seed || 123456789;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
 function teamTotalProbability(edge) {
   const over = clamp(0.5 + edge / 32, 0.25, 0.75);
   return { over, under: 1 - over };
@@ -312,10 +360,10 @@ function powerRatingModel(match, projectedTotal) {
   return { homeProbability: clamp(0.5 + diff, 0.34, 0.76) };
 }
 
-function ensembleModel({ poisson, formModel, oddsModel, powerModel, setsModel }) {
-  const homeProbability = weightedAverage([[formModel.homeProbability, 0.30], [oddsModel.homeProbability, 0.40], [powerModel.homeProbability, 0.30]]);
-  const overProbability = weightedAverage([[poisson.overProbability, 0.48], [setsModel.overProbability, 0.32], [clamp(0.5 + (powerModel.homeProbability - 0.5) * 0.10, 0.46, 0.54), 0.20]]);
-  return { homeProbability: clamp(homeProbability, 0.32, 0.80), overProbability: clamp(overProbability, 0.28, 0.72), underProbability: clamp(1 - overProbability, 0.28, 0.72) };
+function ensembleModel({ poisson, formModel, oddsModel, powerModel, setsModel, monteCarlo }) {
+  const homeProbability = weightedAverage([[formModel.homeProbability, 0.24], [oddsModel.homeProbability, 0.34], [powerModel.homeProbability, 0.22], [monteCarlo.homeWinProbability, 0.20]]);
+  const overProbability = weightedAverage([[poisson.overProbability, 0.34], [setsModel.overProbability, 0.22], [monteCarlo.overProbability, 0.34], [clamp(0.5 + (powerModel.homeProbability - 0.5) * 0.10, 0.46, 0.54), 0.10]]);
+  return { homeProbability: clamp(homeProbability, 0.32, 0.80), overProbability: clamp(overProbability, 0.26, 0.74), underProbability: clamp(1 - overProbability, 0.26, 0.74) };
 }
 
 function buildCandidate(type, selection, probability, odd, edge) {
