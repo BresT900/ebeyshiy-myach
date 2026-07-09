@@ -5,11 +5,7 @@ function formatBetupDateTime(match) {
   const parsed = match.startsAt ? new Date(match.startsAt) : new Date(`${match.date || ""}T${match.time || "00:00"}:00Z`);
 
   if (Number.isNaN(parsed.getTime())) {
-    return {
-      date: match.date || "дата не указана",
-      time: match.time || "время не указано",
-      label: match.date || ""
-    };
+    return { date: match.date || "дата не указана", time: match.time || "время не указано", label: match.date || "" };
   }
 
   const now = new Date();
@@ -28,9 +24,13 @@ function localDateKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function isRealNumber(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
 function formatNumber(value, fallback = "—") {
-  const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(1) : fallback;
+  if (!isRealNumber(value)) return fallback;
+  return Number(value).toFixed(1);
 }
 
 function formatOdd(value) {
@@ -41,6 +41,7 @@ function formatOdd(value) {
 function getPickClass(pick = {}) {
   const type = String(pick.type || "").toLowerCase();
   if (type.includes("тотал команды")) return "team-total";
+  if (type.includes("тотал сета")) return "set-total";
   if (type.includes("тотал")) return "match-total";
   return "winner";
 }
@@ -48,7 +49,6 @@ function getPickClass(pick = {}) {
 function modelRows(models = {}) {
   const rows = Object.values(models || {});
   if (!rows.length) return `<div class="muted">Модели ещё считают.</div>`;
-
   return rows.map((model) => `
     <div class="model-row">
       <span>${model.name}</span>
@@ -59,7 +59,7 @@ function modelRows(models = {}) {
 
 function valueRows(match) {
   const rows = match.prediction?.valueTable || [];
-  const goodRows = rows.filter((row) => Number(row.odd) >= 1.4).slice(0, 6);
+  const goodRows = rows.filter((row) => Number(row.odd) >= 1.4).slice(0, 8);
   if (!goodRows.length) return `<div class="muted">Value пока не найден.</div>`;
 
   return goodRows.map((row) => `
@@ -90,6 +90,27 @@ function renderBestPick(best = {}) {
 }
 
 function renderTotals(match, totals = {}, model = {}) {
+  const teamBlocks = totals.hasTeamTotalLines ? `
+    <div class="total-card">
+      <span>Инд. тотал 1</span>
+      <b>${match.homeTeam}</b>
+      <strong>${formatNumber(totals.projectedHomeTotal)}</strong>
+      <small>Линия: ${formatNumber(totals.homeTotalLine, "нет линии")} • перевес ${formatNumber(totals.homeTotalEdge)}</small>
+    </div>
+    <div class="total-card">
+      <span>Инд. тотал 2</span>
+      <b>${match.awayTeam}</b>
+      <strong>${formatNumber(totals.projectedAwayTotal)}</strong>
+      <small>Линия: ${formatNumber(totals.awayTotalLine, "нет линии")} • перевес ${formatNumber(totals.awayTotalEdge)}</small>
+    </div>
+  ` : `
+    <div class="total-card muted-card">
+      <span>Индивидуальные тоталы</span>
+      <b>линии нет</b>
+      <small>Букмекер не отдал ИТБ/ИТМ, поэтому ставка на ИТ не предлагается.</small>
+    </div>
+  `;
+
   return `
     <div class="totals-panel">
       <div class="total-card main-total">
@@ -98,18 +119,28 @@ function renderTotals(match, totals = {}, model = {}) {
         <small>Линия: ${formatNumber(totals.matchLine, "нет линии")}</small>
         <em>ТБ ${formatNumber(model.overProbability)}% / ТМ ${formatNumber(model.underProbability)}%</em>
       </div>
-      <div class="total-card">
-        <span>Инд. тотал 1</span>
-        <b>${match.homeTeam}</b>
-        <strong>${formatNumber(totals.projectedHomeTotal)}</strong>
-        <small>Линия: ${formatNumber(totals.homeTotalLine, "нет линии")} • перевес ${formatNumber(totals.homeTotalEdge)}</small>
-      </div>
-      <div class="total-card">
-        <span>Инд. тотал 2</span>
-        <b>${match.awayTeam}</b>
-        <strong>${formatNumber(totals.projectedAwayTotal)}</strong>
-        <small>Линия: ${formatNumber(totals.awayTotalLine, "нет линии")} • перевес ${formatNumber(totals.awayTotalEdge)}</small>
-      </div>
+      ${teamBlocks}
+    </div>
+  `;
+}
+
+function renderSetTotals(setTotals = []) {
+  if (!Array.isArray(setTotals) || !setTotals.length) return "";
+  return `
+    <div class="set-totals-panel">
+      <h3>Тоталы сетов</h3>
+      ${setTotals.slice(0, 3).map((set) => `
+        <div class="set-total-row">
+          <div>
+            <b>${set.label}</b>
+            <span>Линия ${formatNumber(set.line)} • прогноз ${formatNumber(set.projected)} • перевес ${formatNumber(set.edge)}</span>
+          </div>
+          <div class="set-probs">
+            <span>ТБ ${formatNumber(set.overProbability)}% / ${formatOdd(set.overOdd)}</span>
+            <span>ТМ ${formatNumber(set.underProbability)}% / ${formatOdd(set.underOdd)}</span>
+          </div>
+        </div>
+      `).join("")}
     </div>
   `;
 }
@@ -138,6 +169,7 @@ function renderMatch(match, compact = false) {
 
       ${renderBestPick(best)}
       ${renderTotals(match, totals, model)}
+      ${renderSetTotals(prediction.setTotals)}
 
       ${compact ? "" : `
         <details>
@@ -264,7 +296,7 @@ async function loadMatches(filter = "all") {
     status.innerHTML = `
       <h2>Автомат работает</h2>
       <p>Матчей найдено: ${data.count}</p>
-      <p class="small">Фильтр: сильные варианты от кэфа 1.40+. Время как в BetUp — по времени телефона/браузера. Сыгранные матчи скрываются сервером.</p>
+      <p class="small">Фильтр: сильные варианты от кэфа 1.40+. Время как в BetUp. Тоталы сетов 1/2/3 выведены в карточке.</p>
     `;
 
     if (!cachedMatches.length) {
