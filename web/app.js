@@ -1,6 +1,6 @@
 const MOSCOW_TIMEZONE = "Europe/Moscow";
 let cachedMatches = [];
-let activeTab = "matches";
+let activeTab = "top";
 
 function formatRussianDateTime(match) {
   if (match.moscowTime) {
@@ -37,6 +37,13 @@ function formatOdd(value) {
   return Number.isFinite(number) && number > 0 ? number.toFixed(2) : "нет";
 }
 
+function getPickClass(pick = {}) {
+  const type = String(pick.type || "").toLowerCase();
+  if (type.includes("тотал команды")) return "team-total";
+  if (type.includes("тотал")) return "match-total";
+  return "winner";
+}
+
 function modelRows(models = {}) {
   const rows = Object.values(models || {});
   if (!rows.length) return `<div class="muted">Модели ещё считают.</div>`;
@@ -51,17 +58,59 @@ function modelRows(models = {}) {
 
 function valueRows(match) {
   const rows = match.prediction?.valueTable || [];
-  if (!rows.length) return `<div class="muted">Value пока не найден.</div>`;
+  const goodRows = rows.filter((row) => Number(row.odd) >= 1.4).slice(0, 6);
+  if (!goodRows.length) return `<div class="muted">Value пока не найден.</div>`;
 
-  return rows.slice(0, 4).map((row) => `
+  return goodRows.map((row) => `
     <div class="value-row">
       <div>
         <b>${row.selection}</b>
-        <span>${row.type} • кэф ${formatOdd(row.odd)}</span>
+        <span>${row.type} • кэф ${formatOdd(row.odd)} • вероятность ${formatNumber(row.probability)}%</span>
       </div>
       <strong class="${Number(row.valuePercent) >= 0 ? "green" : "red"}">${formatNumber(row.valuePercent)}%</strong>
     </div>
   `).join("");
+}
+
+function renderBestPick(best = {}) {
+  return `
+    <div class="pick ${getPickClass(best)}">
+      <div class="pick-label">Лучший выбор</div>
+      <div class="pick-type">${best.type || "Ставка"}</div>
+      <div class="pick-selection">${best.selection || "Расчёт..."}</div>
+      <div class="pick-stats">
+        <span>Кэф ${formatOdd(best.odd)}</span>
+        <span>${best.probability || "0"}%</span>
+        <span>Value ${formatNumber(best.valuePercent)}%</span>
+        <span>Риск ${best.risk || "—"}/10</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderTotals(match, totals = {}, model = {}) {
+  return `
+    <div class="totals-panel">
+      <div class="total-card main-total">
+        <span>Тотал матча</span>
+        <b>${formatNumber(totals.projectedMatchTotal)}</b>
+        <small>Линия: ${formatNumber(totals.matchLine, "нет линии")}</small>
+        <em>ТБ ${formatNumber(model.overProbability)}% / ТМ ${formatNumber(model.underProbability)}%</em>
+      </div>
+      <div class="total-card">
+        <span>Инд. тотал 1</span>
+        <b>${match.homeTeam}</b>
+        <strong>${formatNumber(totals.projectedHomeTotal)}</strong>
+        <small>Линия: ${formatNumber(totals.homeTotalLine, "нет линии")} • перевес ${formatNumber(totals.homeTotalEdge)}</small>
+      </div>
+      <div class="total-card">
+        <span>Инд. тотал 2</span>
+        <b>${match.awayTeam}</b>
+        <strong>${formatNumber(totals.projectedAwayTotal)}</strong>
+        <small>Линия: ${formatNumber(totals.awayTotalLine, "нет линии")} • перевес ${formatNumber(totals.awayTotalEdge)}</small>
+      </div>
+    </div>
+  `;
 }
 
 function renderMatch(match, compact = false) {
@@ -86,19 +135,8 @@ function renderMatch(match, compact = false) {
         <span>${dt.date}</span>
       </div>
 
-      <div class="pick">
-        <b>Главный выбор:</b><br>
-        ${best.selection || "Расчёт..."}<br>
-        <span class="green">${best.probability || "0"}% уверенности</span>
-        <div class="meta-line">Кэф: ${formatOdd(best.odd)} • Value: ${formatNumber(best.valuePercent)}% • Риск: ${best.risk || "—"}/10 (${best.riskLabel || "—"})</div>
-      </div>
-
-      <div class="grid">
-        <div class="mini-card"><span>Тотал матча</span><b>${formatNumber(totals.projectedMatchTotal)}</b><small>Линия: ${formatNumber(totals.matchLine, "нет линии")}</small></div>
-        <div class="mini-card"><span>Тотал 1</span><b>${formatNumber(totals.projectedHomeTotal)}</b><small>${match.homeTeam}</small></div>
-        <div class="mini-card"><span>Тотал 2</span><b>${formatNumber(totals.projectedAwayTotal)}</b><small>${match.awayTeam}</small></div>
-        <div class="mini-card"><span>Ensemble</span><b>ТБ ${formatNumber(model.overProbability)}%</b><small>ТМ ${formatNumber(model.underProbability)}%</small></div>
-      </div>
+      ${renderBestPick(best)}
+      ${renderTotals(match, totals, model)}
 
       ${compact ? "" : `
         <details>
@@ -118,31 +156,33 @@ function renderMatch(match, compact = false) {
   `;
 }
 
-function renderBestBets(matches) {
-  const best = [...matches]
-    .filter((match) => Number(match.prediction?.bestPick?.valuePercent) >= 0)
+function getTopMatches(matches) {
+  return [...matches]
+    .filter((match) => Number(match.prediction?.bestPick?.odd) >= 1.4)
     .sort((a, b) => {
-      const av = Number(a.prediction?.bestPick?.valuePercent || 0) - Number(a.prediction?.bestPick?.risk || 10) * 0.45;
-      const bv = Number(b.prediction?.bestPick?.valuePercent || 0) - Number(b.prediction?.bestPick?.risk || 10) * 0.45;
+      const av = Number(a.prediction?.bestPick?.valuePercent || 0) + Number(a.prediction?.bestPick?.probability || 0) * 0.08 - Number(a.prediction?.bestPick?.risk || 10) * 0.55;
+      const bv = Number(b.prediction?.bestPick?.valuePercent || 0) + Number(b.prediction?.bestPick?.probability || 0) * 0.08 - Number(b.prediction?.bestPick?.risk || 10) * 0.55;
       return bv - av;
-    })
-    .slice(0, 3);
+    });
+}
 
+function renderBestBets(matches) {
+  const best = getTopMatches(matches).slice(0, 3);
   if (!best.length) return "";
 
   return `
     <section class="card best-block">
-      <h2>Лучшие ставки дня</h2>
+      <h2>ТОП ставок дня</h2>
       ${best.map((match, index) => {
         const pick = match.prediction.bestPick;
         const dt = formatRussianDateTime(match);
         return `
-          <div class="best-row">
+          <div class="best-row ${getPickClass(pick)}">
             <div class="rank">#${index + 1}</div>
             <div>
-              <b>${pick.selection}</b>
+              <b>${pick.type}: ${pick.selection}</b>
               <span>${match.homeTeam} — ${match.awayTeam}</span>
-              <small>${dt.label ? `${dt.label}, ` : ""}${dt.time} МСК • кэф ${formatOdd(pick.odd)} • value ${formatNumber(pick.valuePercent)}%</small>
+              <small>${dt.label ? `${dt.label}, ` : ""}${dt.time} МСК • кэф ${formatOdd(pick.odd)} • value ${formatNumber(pick.valuePercent)}% • риск ${pick.risk}/10</small>
             </div>
           </div>
         `;
@@ -152,8 +192,13 @@ function renderBestBets(matches) {
 }
 
 function renderTab(matches) {
+  if (activeTab === "top") {
+    const top = getTopMatches(matches).slice(0, 8);
+    return top.length ? top.map((match) => renderMatch(match)).join("") : `<div class="card">Сильных вариантов от 1.40 пока нет.</div>`;
+  }
+
   if (activeTab === "value") {
-    const valueMatches = matches.filter((match) => Number(match.prediction?.bestPick?.valuePercent) >= 0);
+    const valueMatches = matches.filter((match) => Number(match.prediction?.bestPick?.valuePercent) >= 0 && Number(match.prediction?.bestPick?.odd) >= 1.4);
     return valueMatches.length ? valueMatches.map((match) => renderMatch(match)).join("") : `<div class="card">Валуйных вариантов пока нет.</div>`;
   }
 
@@ -190,6 +235,7 @@ function renderTab(matches) {
 
 function renderTabs() {
   const tabs = [
+    ["top", "ТОП"],
     ["matches", "Матчи"],
     ["totals", "Тоталы"],
     ["value", "Value"],
@@ -227,7 +273,7 @@ async function loadMatches(filter = "all") {
     status.innerHTML = `
       <h2>Автомат работает</h2>
       <p>Матчей найдено: ${data.count}</p>
-      <p class="small">Время как в ставочных приложениях: Сегодня / Завтра / дата + МСК. Сыгранные матчи скрываются сервером.</p>
+      <p class="small">Фильтр: сильные варианты от кэфа 1.40+. Время: МСК. Сыгранные матчи скрываются сервером.</p>
     `;
 
     if (!cachedMatches.length) {
