@@ -1,5 +1,6 @@
 const API_SPORTS_BASE = "https://v1.volleyball.api-sports.io";
 const ODDS_BASE = "https://api.the-odds-api.com/v4";
+const MOSCOW_TIMEZONE = "Europe/Moscow";
 
 export async function getVolleyballMatches({ filter = "all" } = {}) {
   const apiKey = process.env.API_KEY || process.env.API_SPORTS_KEY;
@@ -26,6 +27,8 @@ export async function getVolleyballMatches({ filter = "all" } = {}) {
     source = apiKey ? "demo-fallback" : "demo-no-api-key";
   }
 
+  matches = removeFinishedMatches(matches);
+
   try {
     if (oddsKey) {
       const odds = await fetchVolleyballOdds(oddsKey);
@@ -37,7 +40,7 @@ export async function getVolleyballMatches({ filter = "all" } = {}) {
 
   matches = matches.map((match) => {
     const prediction = buildAdvancedPrediction(match);
-    return { ...match, prediction };
+    return { ...match, prediction, source, apiWarnings };
   });
 
   if (filter === "value") {
@@ -48,31 +51,34 @@ export async function getVolleyballMatches({ filter = "all" } = {}) {
     return matches.filter((match) => match.prediction.bestPick.risk >= 7);
   }
 
-  return matches.map((match) => ({
-    ...match,
-    source,
-    apiWarnings
-  }));
+  return matches;
 }
 
 async function fetchApiSportsMatches(apiKey) {
   const today = new Date().toISOString().slice(0, 10);
-  const url = `${API_SPORTS_BASE}/games?date=${today}`;
-  const response = await fetch(url, {
-    headers: {
-      "x-apisports-key": apiKey
-    }
-  });
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const dates = [today, tomorrow];
+  const loaded = [];
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+  for (const date of dates) {
+    const url = `${API_SPORTS_BASE}/games?date=${date}`;
+    const response = await fetch(url, {
+      headers: {
+        "x-apisports-key": apiKey
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const rows = Array.isArray(payload.response) ? payload.response : [];
+    loaded.push(...rows);
   }
 
-  const payload = await response.json();
-  const rows = Array.isArray(payload.response) ? payload.response : [];
-
-  return rows.slice(0, 20).map((row, index) => {
-    const timestamp = row.date ? new Date(row.date) : new Date();
+  return loaded.slice(0, 40).map((row, index) => {
+    const timestamp = parseGameDate(row.date, row.time);
     const homeTeam = row.teams?.home?.name || row.teams?.home || "Home team";
     const awayTeam = row.teams?.away?.name || row.teams?.away || "Away team";
 
@@ -80,8 +86,11 @@ async function fetchApiSportsMatches(apiKey) {
       id: String(row.id || `api-${index}`),
       league: row.league?.name || "Volleyball",
       country: row.country?.name || row.league?.country || "",
+      startsAt: timestamp.toISOString(),
       date: timestamp.toISOString().slice(0, 10),
-      time: timestamp.toTimeString().slice(0, 5),
+      time: timestamp.toISOString().slice(11, 16),
+      moscowTime: formatMoscowTime(timestamp),
+      status: normalizeStatus(row.status),
       homeTeam,
       awayTeam,
       odds: defaultOdds(),
@@ -89,6 +98,40 @@ async function fetchApiSportsMatches(apiKey) {
       stats: buildSyntheticStats(homeTeam, awayTeam)
     };
   });
+}
+
+function parseGameDate(date, time) {
+  if (date && String(date).includes("T")) {
+    const parsed = new Date(date);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  const text = `${date || new Date().toISOString().slice(0, 10)}T${time || "00:00"}:00Z`;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function normalizeStatus(status) {
+  const raw = typeof status === "string" ? status : status?.short || status?.long || "scheduled";
+  return String(raw || "scheduled").toLowerCase();
+}
+
+function removeFinishedMatches(matches) {
+  const now = Date.now();
+  const finishedWords = ["finished", "after", "ended", "ft", "aet", "cancelled", "canceled", "postponed", "walkover"];
+
+  return matches
+    .filter((match) => {
+      const status = String(match.status || "").toLowerCase();
+      if (finishedWords.some((word) => status.includes(word))) return false;
+
+      const start = match.startsAt ? new Date(match.startsAt).getTime() : new Date(`${match.date}T${match.time || "00:00"}:00Z`).getTime();
+      if (!Number.isFinite(start)) return true;
+
+      return start + 150 * 60 * 1000 >= now;
+    })
+    .sort((a, b) => new Date(a.startsAt || `${a.date}T${a.time}:00Z`) - new Date(b.startsAt || `${b.date}T${b.time}:00Z`))
+    .slice(0, 16);
 }
 
 async function fetchVolleyballOdds(oddsKey) {
@@ -115,12 +158,14 @@ function mergeOdds(matches, oddsRows) {
   return matches.map((match) => {
     const normalizedHome = normalize(match.homeTeam);
     const normalizedAway = normalize(match.awayTeam);
-    const found = oddsRows.find((row) =>
-      normalize(row.home_team).includes(normalizedHome.slice(0, 8)) ||
-      normalize(row.away_team).includes(normalizedAway.slice(0, 8)) ||
-      normalizedHome.includes(normalize(row.home_team).slice(0, 8)) ||
-      normalizedAway.includes(normalize(row.away_team).slice(0, 8))
-    );
+    const found = oddsRows.find((row) => {
+      const rowHome = normalize(row.home_team);
+      const rowAway = normalize(row.away_team);
+      return rowHome.includes(normalizedHome.slice(0, 8)) ||
+        rowAway.includes(normalizedAway.slice(0, 8)) ||
+        normalizedHome.includes(rowHome.slice(0, 8)) ||
+        normalizedAway.includes(rowAway.slice(0, 8));
+    });
 
     if (!found) return match;
 
@@ -150,62 +195,53 @@ function mergeOdds(matches, oddsRows) {
 }
 
 function buildDemoMatches() {
-  const today = new Date();
-  const dateText = today.toISOString().slice(0, 10);
+  const now = new Date();
+  const dateText = new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   return [
-    {
-      id: "volley-001",
-      league: "Poland PlusLiga",
-      country: "Poland",
-      date: dateText,
-      time: "18:30",
-      homeTeam: "Jastrzebski Wegiel",
-      awayTeam: "Asseco Resovia",
-      odds: { home: 1.62, away: 2.22, over: 1.78, under: 1.92 },
-      lines: { total: 181.5, homeTotal: 92.5, awayTotal: 88.5 },
-      stats: { homeAvgTotal: 184.2, awayAvgTotal: 178.6, homeForm: 0.72, awayForm: 0.58, h2hAvgTotal: 183.8 }
-    },
-    {
-      id: "volley-002",
-      league: "Italy SuperLega",
-      country: "Italy",
-      date: dateText,
-      time: "20:00",
-      homeTeam: "Trentino",
-      awayTeam: "Modena",
-      odds: { home: 1.44, away: 2.75, over: 1.86, under: 1.86 },
-      lines: { total: 176.5, homeTotal: 91.5, awayTotal: 84.5 },
-      stats: { homeAvgTotal: 174.1, awayAvgTotal: 177.9, homeForm: 0.78, awayForm: 0.49, h2hAvgTotal: 175.6 }
-    },
-    {
-      id: "volley-003",
-      league: "Turkey Efeler Ligi",
-      country: "Turkey",
-      date: dateText,
-      time: "21:15",
-      homeTeam: "Fenerbahce",
-      awayTeam: "Galatasaray",
-      odds: { home: 1.83, away: 1.96, over: 1.74, under: 2.02 },
-      lines: { total: 188.5, homeTotal: 95.5, awayTotal: 93.5 },
-      stats: { homeAvgTotal: 191.3, awayAvgTotal: 189.8, homeForm: 0.63, awayForm: 0.61, h2hAvgTotal: 192.1 }
-    }
+    demoMatch("volley-001", "Poland PlusLiga", "Poland", dateText, "18:30", "Jastrzebski Wegiel", "Asseco Resovia", { home: 1.62, away: 2.22, over: 1.78, under: 1.92 }, { total: 181.5, homeTotal: 92.5, awayTotal: 88.5 }),
+    demoMatch("volley-002", "Italy SuperLega", "Italy", dateText, "20:00", "Trentino", "Modena", { home: 1.44, away: 2.75, over: 1.86, under: 1.86 }, { total: 176.5, homeTotal: 91.5, awayTotal: 84.5 }),
+    demoMatch("volley-003", "Turkey Efeler Ligi", "Turkey", dateText, "21:15", "Fenerbahce", "Galatasaray", { home: 1.83, away: 1.96, over: 1.74, under: 2.02 }, { total: 188.5, homeTotal: 95.5, awayTotal: 93.5 })
   ];
+}
+
+function demoMatch(id, league, country, date, time, homeTeam, awayTeam, odds, lines) {
+  const startsAt = new Date(`${date}T${time}:00Z`);
+  return {
+    id,
+    league,
+    country,
+    date,
+    time,
+    startsAt: startsAt.toISOString(),
+    moscowTime: formatMoscowTime(startsAt),
+    status: "scheduled",
+    homeTeam,
+    awayTeam,
+    odds,
+    lines,
+    stats: buildSyntheticStats(homeTeam, awayTeam)
+  };
 }
 
 function buildAdvancedPrediction(match) {
   const projectedTotal = average([match.stats.homeAvgTotal, match.stats.awayAvgTotal, match.stats.h2hAvgTotal]);
   const totalEdge = projectedTotal - match.lines.total;
+
   const poisson = poissonTotals(projectedTotal, match.lines.total);
-  const formDiff = match.stats.homeForm - match.stats.awayForm;
-  const homeProbability = clamp(0.5 + formDiff * 0.5 + oddsLean(match.odds.home, match.odds.away) * 0.2, 0.34, 0.78);
+  const formModel = formModelScore(match);
+  const oddsModel = oddsModelScore(match);
+  const powerModel = powerRatingModel(match, projectedTotal);
+  const ensemble = ensembleModel({ poisson, formModel, oddsModel, powerModel });
+
+  const homeProbability = ensemble.homeProbability;
   const awayProbability = 1 - homeProbability;
   const homeTeamTotal = projectedTotal * homeProbability;
   const awayTeamTotal = projectedTotal - homeTeamTotal;
 
   const candidates = [
-    buildCandidate("Тотал", `ТБ ${match.lines.total}`, poisson.overProbability, match.odds.over, totalEdge),
-    buildCandidate("Тотал", `ТМ ${match.lines.total}`, poisson.underProbability, match.odds.under, -totalEdge),
+    buildCandidate("Тотал", `ТБ ${match.lines.total}`, ensemble.overProbability, match.odds.over, totalEdge),
+    buildCandidate("Тотал", `ТМ ${match.lines.total}`, ensemble.underProbability, match.odds.under, -totalEdge),
     buildCandidate("Победа", match.homeTeam, homeProbability, match.odds.home, homeProbability - implied(match.odds.home)),
     buildCandidate("Победа", match.awayTeam, awayProbability, match.odds.away, awayProbability - implied(match.odds.away))
   ].filter((candidate) => candidate.odd >= 1.4);
@@ -233,6 +269,13 @@ function buildAdvancedPrediction(match) {
       homeTotalLine: match.lines.homeTotal,
       awayTotalLine: match.lines.awayTotal
     },
+    models: {
+      poisson: displayModel("Poisson", poisson.overProbability, poisson.underProbability),
+      form: displayModel("Форма", formModel.homeProbability, 1 - formModel.homeProbability),
+      odds: displayModel("Кэфы", oddsModel.homeProbability, 1 - oddsModel.homeProbability),
+      power: displayModel("Power", powerModel.homeProbability, 1 - powerModel.homeProbability),
+      ensemble: displayModel("Ensemble", ensemble.homeProbability, awayProbability)
+    },
     poisson,
     valueTable: candidates.map((candidate) => ({
       type: candidate.type,
@@ -243,17 +286,17 @@ function buildAdvancedPrediction(match) {
       score: round(candidate.score, 3)
     })),
     model: {
-      name: "Poisson + Value + Risk v0.2",
+      name: "Poisson + Form + Odds + Power Ensemble v0.3",
       projectedTotal: round(projectedTotal, 1),
       lineTotal: match.lines.total,
       totalEdge: round(totalEdge, 1),
-      overProbability: round(poisson.overProbability * 100, 1),
-      underProbability: round(poisson.underProbability * 100, 1),
+      overProbability: round(ensemble.overProbability * 100, 1),
+      underProbability: round(ensemble.underProbability * 100, 1),
       homeProbability: round(homeProbability * 100, 1),
       awayProbability: round(awayProbability * 100, 1)
     },
     reasons: [
-      `Модель: Poisson + Value + Risk v0.2`,
+      "Модель: Poisson + Form + Odds + Power Ensemble v0.3",
       `Расчётный тотал: ${round(projectedTotal, 1)} против линии ${match.lines.total}`,
       `Тоталы команд: ${match.homeTeam} ${round(homeTeamTotal, 1)}, ${match.awayTeam} ${round(awayTeamTotal, 1)}`,
       `Value лучшего выбора: ${round(best.valuePercent, 1)}%`,
@@ -270,6 +313,45 @@ function poissonTotals(projectedTotal, line) {
     overProbability,
     underProbability: 1 - overProbability,
     edge: round(diff, 1)
+  };
+}
+
+function formModelScore(match) {
+  const diff = match.stats.homeForm - match.stats.awayForm;
+  return { homeProbability: clamp(0.5 + diff * 0.52, 0.34, 0.78) };
+}
+
+function oddsModelScore(match) {
+  const home = implied(match.odds.home);
+  const away = implied(match.odds.away);
+  const total = home + away || 1;
+  return { homeProbability: clamp(home / total, 0.32, 0.78) };
+}
+
+function powerRatingModel(match, projectedTotal) {
+  const homePower = match.stats.homeAvgTotal * 0.35 + match.stats.homeForm * 100 * 0.65;
+  const awayPower = match.stats.awayAvgTotal * 0.35 + match.stats.awayForm * 100 * 0.65;
+  const diff = (homePower - awayPower) / Math.max(projectedTotal, 1);
+  return { homeProbability: clamp(0.5 + diff, 0.34, 0.78) };
+}
+
+function ensembleModel({ poisson, formModel, oddsModel, powerModel }) {
+  const homeProbability = weightedAverage([
+    [formModel.homeProbability, 0.34],
+    [oddsModel.homeProbability, 0.33],
+    [powerModel.homeProbability, 0.33]
+  ]);
+
+  const overProbability = weightedAverage([
+    [poisson.overProbability, 0.55],
+    [clamp(0.5 + (powerModel.homeProbability - 0.5) * 0.22, 0.42, 0.62), 0.20],
+    [clamp(0.5 + (formModel.homeProbability - 0.5) * 0.18, 0.42, 0.62), 0.25]
+  ]);
+
+  return {
+    homeProbability: clamp(homeProbability, 0.32, 0.80),
+    overProbability: clamp(overProbability, 0.08, 0.92),
+    underProbability: clamp(1 - overProbability, 0.08, 0.92)
   };
 }
 
@@ -314,10 +396,17 @@ function calculateRisk(probability, edge, valuePercent) {
   return clamp(round(risk, 1), 1, 10);
 }
 
-function oddsLean(homeOdd, awayOdd) {
-  const home = implied(homeOdd);
-  const away = implied(awayOdd);
-  return home - away;
+function displayModel(name, a, b) {
+  return {
+    name,
+    first: round(a * 100, 1),
+    second: round(b * 100, 1)
+  };
+}
+
+function weightedAverage(rows) {
+  const totalWeight = rows.reduce((sum, row) => sum + row[1], 0) || 1;
+  return rows.reduce((sum, row) => sum + row[0] * row[1], 0) / totalWeight;
 }
 
 function implied(odd) {
@@ -336,6 +425,20 @@ function normalize(value) {
 
 function seedNumber(text) {
   return String(text || "").split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
+}
+
+function formatMoscowTime(date) {
+  const parsed = date instanceof Date ? date : new Date(date);
+  const dateText = parsed.toLocaleDateString("ru-RU", { timeZone: MOSCOW_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" });
+  const timeText = parsed.toLocaleTimeString("ru-RU", { timeZone: MOSCOW_TIMEZONE, hour: "2-digit", minute: "2-digit" });
+  const today = new Date().toLocaleDateString("ru-RU", { timeZone: MOSCOW_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" });
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString("ru-RU", { timeZone: MOSCOW_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" });
+
+  return {
+    date: dateText,
+    time: timeText,
+    label: dateText === today ? "Сегодня" : dateText === tomorrow ? "Завтра" : dateText
+  };
 }
 
 function clamp(value, min, max) {
