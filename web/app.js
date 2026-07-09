@@ -281,7 +281,7 @@ function renderTab(matches) {
   if (activeTab === "api") {
     const sources = [...new Set(matches.map((match) => match.source || "unknown"))].join(", ");
     const warnings = [...new Set(matches.flatMap((match) => match.apiWarnings || []))];
-    return `<div class="card"><h2>API статус</h2><p>Источник: <b>${sources || "нет данных"}</b></p><p>Матчей на дату: <b>${matches.length}</b></p><p>Выбранная дата: <b>${ruDateFromKey(selectedDate)}</b></p>${warnings.length ? `<p class="red">${warnings.join("<br>")}</p>` : `<p class="green">Ошибок API не видно.</p>`}</div>`;
+    return `<div class="card"><h2>API статус</h2><p>Источник: <b>${sources || "нет данных"}</b></p><p>Матчей на дату: <b>${matches.length}</b></p><p>Всего загружено: <b>${cachedMatches.length}</b></p><p>Выбранная дата: <b>${ruDateFromKey(selectedDate)}</b></p>${warnings.length ? `<p class="red">${warnings.join("<br>")}</p>` : `<p class="green">Ошибок API не видно.</p>`}</div>`;
   }
   return matches.map((match) => renderMatch(match)).join("");
 }
@@ -300,9 +300,21 @@ function bindTabs() {
   });
 }
 
+function updateStatus(visibleMatches = getVisibleMatches()) {
+  const status = document.getElementById("status");
+  if (!status) return;
+  status.innerHTML = `
+    <h2>Автомат работает</h2>
+    <p>Показано на выбранную дату: <b>${visibleMatches.length}</b></p>
+    <p>Всего загружено: <b>${cachedMatches.length}</b></p>
+    <p class="small">Дата: <b>${ruDateFromKey(selectedDate)}</b>. Выбирай Сегодня / Завтра / дату в календаре. ТОП считается отдельно для выбранного дня.</p>
+  `;
+}
+
 function paint() {
   const visibleMatches = getVisibleMatches();
   const container = document.getElementById("matches");
+  updateStatus(visibleMatches);
   container.innerHTML = `${renderDateControls()}${renderBestBets(visibleMatches)}${renderTabs()}${renderTab(visibleMatches)}`;
   bindDateControls();
   bindTabs();
@@ -315,8 +327,8 @@ async function loadMatches(filter = "all") {
     const response = await fetch(`/api/matches?filter=${filter}`);
     const data = await response.json();
     cachedMatches = data.matches || [];
-    status.innerHTML = `<h2>Автомат работает</h2><p>Матчей загружено: ${data.count}</p><p class="small">Выбирай Сегодня / Завтра / дату в календаре. ТОП считается отдельно для выбранного дня.</p>`;
     if (!cachedMatches.length) {
+      status.innerHTML = `<h2>Автомат работает</h2><p>Показано на выбранную дату: <b>0</b></p><p>Всего загружено: <b>0</b></p>`;
       container.innerHTML = `<div class="card">Нет будущих матчей для показа.</div>`;
       return;
     }
