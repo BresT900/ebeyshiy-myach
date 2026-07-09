@@ -1,30 +1,31 @@
-const MOSCOW_TIMEZONE = "Europe/Moscow";
 let cachedMatches = [];
 let activeTab = "top";
 
-function formatRussianDateTime(match) {
-  if (match.moscowTime) {
+function formatBetupDateTime(match) {
+  const parsed = match.startsAt ? new Date(match.startsAt) : new Date(`${match.date || ""}T${match.time || "00:00"}:00Z`);
+
+  if (Number.isNaN(parsed.getTime())) {
     return {
-      date: match.moscowTime.date || match.date || "дата не указана",
-      time: match.moscowTime.time || match.time || "время не указано",
-      label: match.moscowTime.label || match.moscowTime.date || ""
+      date: match.date || "дата не указана",
+      time: match.time || "время не указано",
+      label: match.date || ""
     };
   }
 
-  const rawDate = match.date || "";
-  const rawTime = match.time || "";
-  const source = `${rawDate}T${rawTime || "00:00"}:00Z`;
-  const parsed = new Date(source);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return { date: rawDate || "дата не указана", time: rawTime || "время не указано", label: rawDate || "" };
-  }
+  const now = new Date();
+  const todayKey = localDateKey(now);
+  const tomorrowKey = localDateKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+  const matchKey = localDateKey(parsed);
 
   return {
-    date: parsed.toLocaleDateString("ru-RU", { timeZone: MOSCOW_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" }),
-    time: parsed.toLocaleTimeString("ru-RU", { timeZone: MOSCOW_TIMEZONE, hour: "2-digit", minute: "2-digit" }),
-    label: parsed.toLocaleDateString("ru-RU", { timeZone: MOSCOW_TIMEZONE, day: "2-digit", month: "2-digit" })
+    date: parsed.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    time: parsed.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+    label: matchKey === todayKey ? "Сегодня" : matchKey === tomorrowKey ? "Завтра" : parsed.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
   };
+}
+
+function localDateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function formatNumber(value, fallback = "—") {
@@ -118,7 +119,7 @@ function renderMatch(match, compact = false) {
   const best = prediction.bestPick || {};
   const totals = prediction.totals || {};
   const model = prediction.model || {};
-  const dt = formatRussianDateTime(match);
+  const dt = formatBetupDateTime(match);
 
   return `
     <div class="match">
@@ -131,7 +132,7 @@ function renderMatch(match, compact = false) {
       </div>
 
       <div class="teams">
-        <span>${dt.label ? `${dt.label} • ` : ""}${dt.time} МСК</span>
+        <span>${dt.label ? `${dt.label} • ` : ""}${dt.time}</span>
         <span>${dt.date}</span>
       </div>
 
@@ -175,14 +176,14 @@ function renderBestBets(matches) {
       <h2>ТОП ставок дня</h2>
       ${best.map((match, index) => {
         const pick = match.prediction.bestPick;
-        const dt = formatRussianDateTime(match);
+        const dt = formatBetupDateTime(match);
         return `
           <div class="best-row ${getPickClass(pick)}">
             <div class="rank">#${index + 1}</div>
             <div>
               <b>${pick.type}: ${pick.selection}</b>
               <span>${match.homeTeam} — ${match.awayTeam}</span>
-              <small>${dt.label ? `${dt.label}, ` : ""}${dt.time} МСК • кэф ${formatOdd(pick.odd)} • value ${formatNumber(pick.valuePercent)}% • риск ${pick.risk}/10</small>
+              <small>${dt.label ? `${dt.label}, ` : ""}${dt.time} • кэф ${formatOdd(pick.odd)} • value ${formatNumber(pick.valuePercent)}% • риск ${pick.risk}/10</small>
             </div>
           </div>
         `;
@@ -202,9 +203,7 @@ function renderTab(matches) {
     return valueMatches.length ? valueMatches.map((match) => renderMatch(match)).join("") : `<div class="card">Валуйных вариантов пока нет.</div>`;
   }
 
-  if (activeTab === "totals") {
-    return matches.map((match) => renderMatch(match, false)).join("");
-  }
+  if (activeTab === "totals") return matches.map((match) => renderMatch(match, false)).join("");
 
   if (activeTab === "models") {
     return matches.map((match) => `
@@ -224,7 +223,7 @@ function renderTab(matches) {
         <h2>API статус</h2>
         <p>Источник: <b>${sources || "нет данных"}</b></p>
         <p>Матчей в выдаче: <b>${matches.length}</b></p>
-        <p>Время: <b>Москва / МСК</b></p>
+        <p>Время: <b>как в BetUp — по времени телефона/браузера</b></p>
         ${warnings.length ? `<p class="red">${warnings.join("<br>")}</p>` : `<p class="green">Ошибок API не видно.</p>`}
       </div>
     `;
@@ -234,15 +233,7 @@ function renderTab(matches) {
 }
 
 function renderTabs() {
-  const tabs = [
-    ["top", "ТОП"],
-    ["matches", "Матчи"],
-    ["totals", "Тоталы"],
-    ["value", "Value"],
-    ["models", "Модели"],
-    ["api", "API"]
-  ];
-
+  const tabs = [["top", "ТОП"], ["matches", "Матчи"], ["totals", "Тоталы"], ["value", "Value"], ["models", "Модели"], ["api", "API"]];
   return `<div class="tabs">${tabs.map(([id, label]) => `<button class="tab ${activeTab === id ? "active" : ""}" data-tab="${id}">${label}</button>`).join("")}</div>`;
 }
 
@@ -273,7 +264,7 @@ async function loadMatches(filter = "all") {
     status.innerHTML = `
       <h2>Автомат работает</h2>
       <p>Матчей найдено: ${data.count}</p>
-      <p class="small">Фильтр: сильные варианты от кэфа 1.40+. Время: МСК. Сыгранные матчи скрываются сервером.</p>
+      <p class="small">Фильтр: сильные варианты от кэфа 1.40+. Время как в BetUp — по времени телефона/браузера. Сыгранные матчи скрываются сервером.</p>
     `;
 
     if (!cachedMatches.length) {
